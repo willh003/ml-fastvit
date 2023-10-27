@@ -826,7 +826,9 @@ class FastViT(nn.Module):
         self.network = nn.ModuleList(network)
 
         # For segmentation and detection, extract intermediate output
-        if self.fork_feat:
+        # WILL: ALWAYS DO THIS STUFF (no checkpoints for sem seg)
+        self.out_indices = [0, 2, 4, 6]
+        if False:#if self.fork_feat:
             # add a norm layer for each output
             self.out_indices = [0, 2, 4, 6]
             for i_emb, i_layer in enumerate(self.out_indices):
@@ -839,8 +841,10 @@ class FastViT(nn.Module):
                     layer = norm_layer(embed_dims[i_emb])
                 layer_name = f"norm{i_layer}"
                 self.add_module(layer_name, layer)
+            
+        # WILL: used to be an else here
+        # Classifier head
         else:
-            # Classifier head
             self.gap = nn.AdaptiveAvgPool2d(output_size=1)
             self.conv_exp = MobileOneBlock(
                 in_channels=embed_dims[-1],
@@ -858,6 +862,7 @@ class FastViT(nn.Module):
                 if num_classes > 0
                 else nn.Identity()
             )
+        ##### TO HERE ####
 
         self.apply(self.cls_init_weights)
         self.init_cfg = copy.deepcopy(init_cfg)
@@ -928,9 +933,11 @@ class FastViT(nn.Module):
         for idx, block in enumerate(self.network):
             x = block(x)
             if self.fork_feat and idx in self.out_indices:
-                norm_layer = getattr(self, f"norm{idx}")
-                x_out = norm_layer(x)
-                outs.append(x_out)
+                # WILL: no normalization done
+                # norm_layer = getattr(self, f"norm{idx}")
+                # x_out = norm_layer(x)
+                # outs.append(x_out) 
+                outs.append(x)
         if self.fork_feat:
             # output the features of four stages for dense prediction
             return outs

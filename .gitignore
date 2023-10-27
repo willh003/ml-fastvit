@@ -1,5 +1,10 @@
 # Will
 checkpoints/
+fpn/
+tb_logs/
+lightning_logs/
+test_image_out/
+pretrained_checkpoints/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
