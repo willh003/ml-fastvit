@@ -42,7 +42,6 @@ class VitSemantic(pl.LightningModule):
         self.num_classes = num_classes
 
         self.backbone = backbone
-        self.disable_backbone_grads() # do not update backbone
         if backbone_id == 'fastervit':
             embed_dims = [64, 128, 256, 512]
         elif backbone_id=='fastvit':
@@ -56,9 +55,6 @@ class VitSemantic(pl.LightningModule):
 
         self.training_step_outputs = []
         self.validation_step_outputs = []
-
-    def disable_backbone_grads(self):
-        self.backbone.requires_grad_(False)
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
         optim = torch.optim.AdamW(self.head.parameters(), lr=self.lr)
@@ -265,10 +261,12 @@ def train(backbone, batch_size, epochs, lr, img_dim, num_classes, datasets=['rec
                                                num_workers = 10,
                                                shuffle = False)
 
+
     model = VitSemantic(backbone=backbone, num_classes = num_classes, img_dim=img_dim,backbone_id=backbone_id, lr = lr)
     checkpoint_file=  backbone_id + '-{epoch}-{step}'
     checkpoint_callback = pl.callbacks.ModelCheckpoint(dirpath='checkpoints/',filename=checkpoint_file, every_n_epochs=5, monitor ='train_loss')
     
+
     logger = TensorBoardLogger("tb_logs", name=backbone_id)
     trainer = pl.Trainer(max_epochs=epochs, callbacks=[checkpoint_callback], logger=logger)
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader)
