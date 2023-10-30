@@ -57,7 +57,12 @@ class VitSemantic(pl.LightningModule):
         self.validation_step_outputs = []
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
-        optim = torch.optim.AdamW(self.head.parameters(), lr=self.lr)
+        if hasattr(self.backbone, 'trainable_params'):
+            params =  list(self.head.parameters()) + self.backbone.trainable_params
+        else:
+            params = self.head.parameters()
+        optim = torch.optim.AdamW(params, lr=self.lr)
+
         return optim
 
     def forward(self, img):
@@ -263,9 +268,10 @@ def train(backbone, batch_size, epochs, lr, img_dim, num_classes, datasets=['rec
 
 
     model = VitSemantic(backbone=backbone, num_classes = num_classes, img_dim=img_dim,backbone_id=backbone_id, lr = lr)
-    checkpoint_file=  backbone_id + '-{epoch}-{step}'
+    checkpoint_file=  backbone_id + '-{epoch}-{step}' + f'-b={batch_size}-lr={lr:.0e}'
     checkpoint_callback = pl.callbacks.ModelCheckpoint(dirpath='checkpoints/',filename=checkpoint_file, every_n_epochs=5, monitor ='train_loss')
-    
+
+
 
     logger = TensorBoardLogger("tb_logs", name=backbone_id)
     trainer = pl.Trainer(max_epochs=epochs, callbacks=[checkpoint_callback], logger=logger)
@@ -273,8 +279,11 @@ def train(backbone, batch_size, epochs, lr, img_dim, num_classes, datasets=['rec
 
 def test_images(backbone, checkpoint, size, df, backbone_id='fastvit'):
     h, w = size
-    
-    model = VitSemantic.load_from_checkpoint(checkpoint,num_classes=2, img_dim=(h, w), backbone=backbone, backbone_id=backbone_id, strict=False).cuda()
+
+    sd = torch.load(checkpoint)['state_dict']
+    model = VitSemantic(num_classes=2, img_dim=(h, w), backbone=backbone, backbone_id=backbone_id)
+    model.load_state_dict(sd, strict=False)
+    model = model.cuda()
 
     #model2 = VitSemantic(2, (h, w), backbone).cuda()
     for f in os.listdir(df):

@@ -267,6 +267,7 @@ class FasterVitBackbone(FasterViT):
             l3_channels = 512
             self.l2_prompt = self.get_vpt_params(l2_channels, self.vpt_prompt_length)
             self.l3_prompt = self.get_vpt_params(l3_channels, self.vpt_prompt_length)
+            self.trainable_params = [self.l2_prompt, self.l3_prompt]
 
 
     def disable_grads(self):
@@ -309,7 +310,13 @@ class FasterVitBackbone(FasterViT):
     def hook(self, model, input, output):
         self.outputs.append(output.detach())
 
-
+def adjust_backbone_bias(backbone, add_seq_length):
+    for i, level in enumerate(backbone.levels):
+        if i == 2 or i == 3:
+            for blk in level.blocks:
+                b, c, h, w = blk.attn.pos_emb_funct.relative_bias.size()
+                blk.attn.pos_emb_funct.relative_bias = torch.zeros((b, c, h+add_seq_length, w+add_seq_length))
+    return backbone
 
 
 def create_faster_vit(pretrained=False, **kwargs):
@@ -350,30 +357,33 @@ def main():
     backbone_path="/home/pcgta/Documents/playground/ml-fastvit/pretrained_checkpoints/fastervit_0_224_1k.pth.tar"
     
     VPT = True
-    VPT_PROMPT_LENGTH = 5
+    VPT_PROMPT_LENGTH = 10
     backbone = create_faster_vit(pretrained=True, vpt=VPT, vpt_prompt_length=VPT_PROMPT_LENGTH,model_path = backbone_path,freeze=True)
-    BATCH_SIZE = 16
-    EPOCHS = 50
-    LR = 5e-4
+
+    BATCH_SIZE = 8
+    EPOCHS = 60
+    LR = 6e-4
     IMG_DIM = (224, 224)
     NUM_CLASSES = 2
     BACKBONE_ID='fastervit'
     DATASETS = ['recon', 'sacson','kitti','asrl']
 
-
     train(backbone,BATCH_SIZE,EPOCHS,LR,IMG_DIM,NUM_CLASSES, DATASETS, BACKBONE_ID)
 
 def test():
     VPT = True
-    VPT_PROMPT_LENGTH = 1
+    VPT_PROMPT_LENGTH = 10
     backbone_path="/home/pcgta/Documents/playground/ml-fastvit/pretrained_checkpoints/fastervit_0_224_1k.pth.tar"
     backbone = create_faster_vit(pretrained=True, model_path = backbone_path, vpt=VPT, vpt_prompt_length=VPT_PROMPT_LENGTH)
+    if VPT:
+        backbone = adjust_backbone_bias(backbone, VPT_PROMPT_LENGTH)
+    
     IMG_DIM = (224, 224)
 
-    fastervit_checkpoint = 'checkpoints/fastervit-epoch=9-step=167840.ckpt'
+    fastervit_checkpoint = 'checkpoints/fastervit-epoch=59-step=125880-b=8-lr=6e-04.ckpt'
     test_images(backbone, fastervit_checkpoint, IMG_DIM, 'test_images', 'fastervit')
 
 
 if __name__=="__main__":
-    #test()
-    main()
+    test()
+   # main()
