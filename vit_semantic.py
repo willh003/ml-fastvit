@@ -1,5 +1,4 @@
 import torch
-import models
 import os
 from models.modules.mobileone import reparameterize_model
 from models.fastvit import *
@@ -10,10 +9,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.utilities.types import OptimizerLRScheduler
 
 from fpn.fpn import PanopticFPN
-from PIL import Image
-from pathlib import Path
 
-from torchvision.models.detection import maskrcnn_resnet50_fpn
 from utils import save_mask
 
 from lightning.pytorch.loggers import TensorBoardLogger

@@ -1,5 +1,5 @@
 # Will
-checkpoints/
+checkpoints/*
 fpn/
 tb_logs/
 lightning_logs/
