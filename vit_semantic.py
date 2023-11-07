@@ -27,7 +27,6 @@ PLAN
     - use vpt online?? somehow to update during robot running
 
 QUESTIONS:
-    - Downresing: bilinear interpolation or striding?
     - Is fpn really necessary? Seems like it does same thing as ViT?
         - If so, how would fpn work on a vit? Is each embed dimension a separate channel?
         - If not, is a linear layer from embedding to class enough? (should be, this is basically clip)
