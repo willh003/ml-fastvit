@@ -1,2 +1,6 @@
+torch
+torchvision
+matplotlib
 timm
-scipy
+fastervit
+lightning

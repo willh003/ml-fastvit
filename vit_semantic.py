@@ -1,7 +1,5 @@
 import torch
 import os
-from models.modules.mobileone import reparameterize_model
-from models.fastvit import *
 import torch.nn.functional as F
 import torchvision
 from torchvision import transforms
@@ -28,7 +26,7 @@ QUESTIONS:
         - If not, is a linear layer from embedding to class enough? (should be, this is basically clip)
 """
 class VitSemantic(pl.LightningModule):
-    def __init__(self, num_classes, img_dim, backbone=None,backbone_id='fastvit', lr=1e-3):
+    def __init__(self, num_classes, img_dim, backbone=None,backbone_id='fastervit', lr=1e-3):
         """
         backbone: a ViT backbone returning a set of embeddings at different stages of convolution/attention
         embed_dims: dimension of embeddings output by the backbone, for use with the fpn head
@@ -231,12 +229,7 @@ def get_train_val_datasets(base_src, base_trg, datasets, transform, split=.85):
     val_data = TraversabilityDataset(src_paths[split_loc:], trg_paths[split_loc:], transform)
     return train_data, val_data
 
-def inference(model):
-    # For inference
-    model.eval()      
-    model_inf = reparameterize_model(model)
-
-def train(backbone, batch_size, epochs, lr, img_dim, num_classes, datasets=['recon'], backbone_id = 'fastvit'):
+def train(backbone, batch_size, epochs, lr, img_dim, num_classes, datasets=['recon'], backbone_id = 'fastervit'):
     transform = transforms.Compose(
     [
         transforms.RandomHorizontalFlip(),
@@ -272,7 +265,7 @@ def train(backbone, batch_size, epochs, lr, img_dim, num_classes, datasets=['rec
     trainer = pl.Trainer(max_epochs=epochs, callbacks=[checkpoint_callback], logger=logger)
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
-def test_images(backbone, checkpoint, size, df, backbone_id='fastvit'):
+def test_images(backbone, checkpoint, size, df, backbone_id='fastervit'):
     h, w = size
 
     sd = torch.load(checkpoint)['state_dict']
@@ -280,7 +273,6 @@ def test_images(backbone, checkpoint, size, df, backbone_id='fastvit'):
     model.load_state_dict(sd, strict=False)
     model = model.cuda()
 
-    #model2 = VitSemantic(2, (h, w), backbone).cuda()
     for f in os.listdir(df):
         img = torchvision.io.read_image(os.path.join(df, f)).float()/256
         if img.size()[1] < size[0] or img.size()[2] < size[1]:
@@ -289,11 +281,7 @@ def test_images(backbone, checkpoint, size, df, backbone_id='fastvit'):
         img = transforms.functional.center_crop(img, size)
 
         out = model(img.cuda()[None]) 
-        #out2 = model2(img.cuda()[None]) 
         save_mask(img.cpu().permute(1,2,0), out.argmax(dim=1)[0].float().cpu(), f'test_image_out/{f}_trained.png')
-        #save_mask(img.cpu().permute(1,2,0), out2.argmax(dim=1)[0].float().cpu(), f'test_image_out/{f}_untrained.png')
-        #torchvision.utils.save_image(out.argmax(dim=1).float(), 'test_trained.png')
-        #torch.tensor([F.interpolate(p, size=(2,h,w)) for p in pred])
 
 def main():
     BATCH_SIZE = 16
@@ -302,19 +290,12 @@ def main():
     IMG_DIM = (224, 224)
     NUM_CLASSES = 2
 
-
-    backbone = fastvit_ma36(fork_feat=True)
-    checkpoint = torch.load('/home/pcgta/Documents/playground/ml-fastvit/pretrained_checkpoints/fastvit_ma36.pth.tar')
-    backbone.load_state_dict(checkpoint['state_dict'])
-    DATASETS = ['recon', 'sacson','kitti','asrl']
-    train(backbone = backbone,batch_size=BATCH_SIZE, epochs=EPOCHS, lr = LR, num_classes=NUM_CLASSES, img_dim=IMG_DIM, datasets=DATASETS)
-
     # backbone = fastvit_ma36(fork_feat=True)
-    # backbone_params = torch.load('/home/pcgta/Documents/playground/ml-fastvit/pretrained_checkpoints/fastvit_ma36.pth.tar')
-    # backbone.load_state_dict(backbone_params['state_dict'])
+    # checkpoint = torch.load('/home/pcgta/Documents/playground/ml-fastvit/pretrained_checkpoints/fastvit_ma36.pth.tar')
+    # backbone.load_state_dict(checkpoint['state_dict'])
+    # DATASETS = ['recon', 'sacson','kitti','asrl']
+    # train(backbone = backbone,batch_size=BATCH_SIZE, epochs=EPOCHS, lr = LR, num_classes=NUM_CLASSES, img_dim=IMG_DIM, datasets=DATASETS)
 
-    # fastvit_checkpoint = '/home/pcgta/Documents/playground/ml-fastvit/checkpoints/fastvit-epoch=44-step=9360.ckpt'
-    # test_images(backbone, fastvit_checkpoint, IMG_DIM, 'test_images', 'fastvit')
 
 if __name__=='__main__':
     main()
