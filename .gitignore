@@ -1,10 +1,12 @@
 # Will
-checkpoints/
+trav_checkpoints/
 fpn/
 tb_logs/
 lightning_logs/
 test_image_out/
-pretrained_checkpoints/
+fastervit_checkpoints/
+gnm/gnm_checkpoints/
+.vscode/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

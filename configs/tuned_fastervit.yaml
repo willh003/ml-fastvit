@@ -1,0 +1,18 @@
+
+traversability:
+  checkpoint_path: 'trav_checkpoints/fastervit-epoch=59-step=125880-b=8-lr=6e-04.ckpt'
+  vpt: True
+  vpt_prompt_length: 10
+  img_dim: 
+    - 224
+    - 224
+
+navigation:
+  checkpoint_path: 'gnm/gnm_checkpoints/obsnet.pt'
+
+training:
+  dropout: .1
+
+device: 'cpu'
+  
+

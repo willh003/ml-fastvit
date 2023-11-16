@@ -1,5 +1,7 @@
 import matplotlib.pyplot as plt
 
+############ Data Vis #################
+
 def save_mask(image, mask, path):
 
     plt.imshow(image) # I would add interpolation='none'

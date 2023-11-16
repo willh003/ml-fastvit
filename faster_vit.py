@@ -1,14 +1,141 @@
 import torch
-from torch.autograd import Variable
 from collections import deque
 from fastervit.models.faster_vit import HAT, FasterViT, FasterViTLayer, window_partition, window_reverse, PatchEmbed, ct_window, ct_dewindow, TokenInitializer, ConvBlock, Downsample
-from fastervit.models.faster_vit import faster_vit_0_224
-from timm.models._builder import resolve_pretrained_cfg, _update_default_kwargs
 from timm.models.layers import LayerNorm2d
-from pathlib import Path
 import torch.nn as nn
-from vit_semantic import train, test_images
 
+def adjust_backbone_bias(backbone, add_seq_length):
+    for i, level in enumerate(backbone.levels):
+        if i == 2 or i == 3:
+            for blk in level.blocks:
+                b, c, h, w = blk.attn.pos_emb_funct.relative_bias.size()
+                blk.attn.pos_emb_funct.relative_bias = torch.zeros((b, c, h+add_seq_length, w+add_seq_length))
+    return backbone
+
+class FasterVitBackbone(FasterViT):
+    """
+    Extension of FasterViT class that returns intermediate outputs from FasterViT layers
+    Allows for VPT on inputs and FPN on outputs
+    """
+    def __init__(self,
+                 dim,
+                 in_dim,
+                 depths,
+                 window_size,
+                 ct_size,
+                 mlp_ratio,
+                 num_heads,
+                 resolution=224,
+                 drop_path_rate=0.2,
+                 in_chans=3,
+                 num_classes=1000,
+                 qkv_bias=True,
+                 qk_scale=None,
+                 drop_rate=0.,
+                 attn_drop_rate=0.,
+                 layer_scale=None,
+                 layer_scale_conv=None,
+                 layer_norm_last=False,
+                 hat=[False, False, True, False],
+                 do_propagation=False,
+                 **kwargs):
+
+        #super().__init__(**kwargs)
+        super(FasterViT, self).__init__()
+
+
+        num_features = int(dim * 2 ** (len(depths) - 1))
+        self.num_classes = num_classes
+        self.patch_embed = PatchEmbed(in_chans=in_chans, in_dim=in_dim, dim=dim)
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]
+        self.levels = nn.ModuleList()
+        if hat is None: hat = [True, ]*len(depths)
+        for i in range(len(depths)):
+            conv = True if (i == 0 or i == 1) else False
+            layer_dim = int(dim * 2 ** i)
+            
+            level = VPT_FasterViTLayer(dim=layer_dim,
+                                   depth=depths[i],
+                                   num_heads=num_heads[i],
+                                   window_size=window_size[i],
+                                   ct_size=ct_size,
+                                   mlp_ratio=mlp_ratio,
+                                   qkv_bias=qkv_bias,
+                                   qk_scale=qk_scale,
+                                   conv=conv,
+                                   drop=drop_rate,
+                                   attn_drop=attn_drop_rate,
+                                   drop_path=dpr[sum(depths[:i]):sum(depths[:i + 1])],
+                                   downsample=(i < 3),
+                                   layer_scale=layer_scale,
+                                   layer_scale_conv=layer_scale_conv,
+                                   input_resolution=int(2 ** (-2 - i) * resolution),
+                                   only_local=not hat[i],
+                                   do_propagation=do_propagation)
+            self.levels.append(level)
+        self.norm = LayerNorm2d(num_features) if layer_norm_last else nn.BatchNorm2d(num_features)
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.head = nn.Linear(num_features, num_classes) if num_classes > 0 else nn.Identity()
+        self.apply(self._init_weights)
+
+        self.outputs = deque(maxlen=5)
+
+        # run once without vpt, to get embed dim
+        resolution = kwargs.get('resolution', 224)
+        self.vpt = kwargs.get('vpt', False)
+        freeze = kwargs.get('freeze', True) 
+
+        if self.vpt:
+            if freeze:
+                self.disable_grads() # disable before adding soft prompt
+            self.vpt_prompt_length = kwargs.get('vpt_prompt_length')
+            l2_channels = 256
+            l3_channels = 512
+            self.l2_prompt = self.get_vpt_params(l2_channels, self.vpt_prompt_length)
+            self.l3_prompt = self.get_vpt_params(l3_channels, self.vpt_prompt_length)
+            self.trainable_params = [self.l2_prompt, self.l3_prompt]
+
+
+    def disable_grads(self):
+        for param in self.parameters():
+            param.requires_grad = False
+
+    def get_vpt_params(self, channels, prompt_length):
+        params = torch.nn.Parameter(data=torch.zeros(prompt_length, channels, requires_grad=True))
+        torch.nn.init.xavier_uniform_(params)    
+        return params
+
+    def forward_features(self, x):
+        """
+        Sequentially run each level (2 convs, 2 attention layers) of the FasterVit backbone, and store each intermediate output in a buffer
+        """
+        x = self.patch_embed(x)
+        self.outputs.append(x)
+        for i, level in enumerate(self.levels):
+            if i == 2 and self.vpt:
+                x = level(x, soft_prompt=self.l2_prompt)
+            elif i == 3 and self.vpt:
+                x = level(x, soft_prompt=self.l3_prompt)
+            else:
+                x = level(x)
+            if i !=2:
+                self.outputs.append(x)
+            
+
+        x = self.norm(x)
+        return x
+
+    def forward(self, x):
+        """
+        Override FasterViT forward method to only apply the encoder backbone
+        """
+
+        self.outputs.clear()
+        _=self.forward_features(x)
+
+        #x = self.forward_features(x)
+        return list(self.outputs)
+    
 
 class VPT_FasterViTLayer(FasterViTLayer):
     def __init__(self,
@@ -186,204 +313,3 @@ class VPT_HAT(HAT):
                 ctr_image_space = ctr.transpose(1, 2).reshape(B, N, self.cr_window, self.cr_window)
                 x = x + self.gamma1 * self.upsampler(ctr_image_space.to(dtype=torch.float32)).flatten(2).transpose(1, 2).to(dtype=x.dtype)
         return x, ct
-
-class FasterVitBackbone(FasterViT):
-    """
-    Extension of FasterViT class, allowing for vpt on inputs and fpn on outputs
-    """
-    def __init__(self,
-                 dim,
-                 in_dim,
-                 depths,
-                 window_size,
-                 ct_size,
-                 mlp_ratio,
-                 num_heads,
-                 resolution=224,
-                 drop_path_rate=0.2,
-                 in_chans=3,
-                 num_classes=1000,
-                 qkv_bias=True,
-                 qk_scale=None,
-                 drop_rate=0.,
-                 attn_drop_rate=0.,
-                 layer_scale=None,
-                 layer_scale_conv=None,
-                 layer_norm_last=False,
-                 hat=[False, False, True, False],
-                 do_propagation=False,
-                 **kwargs):
-
-        #super().__init__(**kwargs)
-        super(FasterViT, self).__init__()
-
-
-        num_features = int(dim * 2 ** (len(depths) - 1))
-        self.num_classes = num_classes
-        self.patch_embed = PatchEmbed(in_chans=in_chans, in_dim=in_dim, dim=dim)
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]
-        self.levels = nn.ModuleList()
-        if hat is None: hat = [True, ]*len(depths)
-        for i in range(len(depths)):
-            conv = True if (i == 0 or i == 1) else False
-            layer_dim = int(dim * 2 ** i)
-            
-            level = VPT_FasterViTLayer(dim=layer_dim,
-                                   depth=depths[i],
-                                   num_heads=num_heads[i],
-                                   window_size=window_size[i],
-                                   ct_size=ct_size,
-                                   mlp_ratio=mlp_ratio,
-                                   qkv_bias=qkv_bias,
-                                   qk_scale=qk_scale,
-                                   conv=conv,
-                                   drop=drop_rate,
-                                   attn_drop=attn_drop_rate,
-                                   drop_path=dpr[sum(depths[:i]):sum(depths[:i + 1])],
-                                   downsample=(i < 3),
-                                   layer_scale=layer_scale,
-                                   layer_scale_conv=layer_scale_conv,
-                                   input_resolution=int(2 ** (-2 - i) * resolution),
-                                   only_local=not hat[i],
-                                   do_propagation=do_propagation)
-            self.levels.append(level)
-        self.norm = LayerNorm2d(num_features) if layer_norm_last else nn.BatchNorm2d(num_features)
-        self.avgpool = nn.AdaptiveAvgPool2d(1)
-        self.head = nn.Linear(num_features, num_classes) if num_classes > 0 else nn.Identity()
-        self.apply(self._init_weights)
-
-        self.outputs = deque(maxlen=5)
-
-        # run once without vpt, to get embed dim
-        resolution = kwargs.get('resolution', 224)
-        self.vpt = kwargs.get('vpt', False)
-        freeze = kwargs.get('freeze', True) 
-
-        if self.vpt:
-            if freeze:
-                self.disable_grads() # disable before adding soft prompt
-            self.vpt_prompt_length = kwargs.get('vpt_prompt_length')
-            l2_channels = 256
-            l3_channels = 512
-            self.l2_prompt = self.get_vpt_params(l2_channels, self.vpt_prompt_length)
-            self.l3_prompt = self.get_vpt_params(l3_channels, self.vpt_prompt_length)
-            self.trainable_params = [self.l2_prompt, self.l3_prompt]
-
-
-    def disable_grads(self):
-        for param in self.parameters():
-            param.requires_grad = False
-
-    def get_vpt_params(self, channels, prompt_length):
-        params = torch.nn.Parameter(data=torch.zeros(prompt_length, channels, requires_grad=True))
-        torch.nn.init.xavier_uniform_(params)    
-        return params
-
-    def forward_features(self, x):
-        x = self.patch_embed(x)
-        self.outputs.append(x)
-        for i, level in enumerate(self.levels):
-            if i == 2 and self.vpt:
-                x = level(x, soft_prompt=self.l2_prompt)
-            elif i == 3 and self.vpt:
-                x = level(x, soft_prompt=self.l3_prompt)
-            else:
-                x = level(x)
-            if i !=2:
-                self.outputs.append(x)
-            
-
-        x = self.norm(x)
-        return x
-
-    def forward(self, x):
-        """
-        Override forward method to only use head
-        """
-
-        self.outputs.clear()
-        embed=self.forward_features(x)
-
-        #x = self.forward_features(x)
-        return list(self.outputs)
-    
-    def hook(self, model, input, output):
-        self.outputs.append(output.detach())
-
-def adjust_backbone_bias(backbone, add_seq_length):
-    for i, level in enumerate(backbone.levels):
-        if i == 2 or i == 3:
-            for blk in level.blocks:
-                b, c, h, w = blk.attn.pos_emb_funct.relative_bias.size()
-                blk.attn.pos_emb_funct.relative_bias = torch.zeros((b, c, h+add_seq_length, w+add_seq_length))
-    return backbone
-
-
-def create_faster_vit(pretrained=False, **kwargs):
-    depths = kwargs.pop("depths", [2, 3, 6, 5])
-    num_heads = kwargs.pop("num_heads", [2, 4, 8, 16])
-    window_size = kwargs.pop("window_size", [7, 7, 7, 7])
-    ct_size = kwargs.pop("ct_size", 2)
-    dim = kwargs.pop("dim", 64)
-    in_dim = kwargs.pop("in_dim", 64)
-    mlp_ratio = kwargs.pop("mlp_ratio", 4)
-    resolution = kwargs.pop("resolution", 224)
-    drop_path_rate = kwargs.pop("drop_path_rate", 0.2)
-    model_path = kwargs.pop("model_path", "/tmp/faster_vit_0.pth.tar")
-    hat = kwargs.pop("hat", [False, False, True, False])
-    pretrained_cfg = resolve_pretrained_cfg('faster_vit_0_224').to_dict()
-    _update_default_kwargs(pretrained_cfg, kwargs, kwargs_filter=None)
-    model = FasterVitBackbone(depths=depths,
-                      num_heads=num_heads,
-                      window_size=window_size,
-                      ct_size=ct_size,
-                      dim=dim,
-                      in_dim=in_dim,
-                      mlp_ratio=mlp_ratio,
-                      resolution=resolution,
-                      drop_path_rate=drop_path_rate,
-                      hat=hat,
-                      **kwargs)
-    model.pretrained_cfg = pretrained_cfg
-    model.default_cfg = model.pretrained_cfg
-    if pretrained:
-        if not Path(model_path).is_file():
-            url = model.default_cfg['url']
-            torch.hub.download_url_to_file(url=url, dst=model_path)
-        model._load_state_dict(model_path)
-    return model
-
-def main():
-    backbone_path="/home/pcgta/Documents/playground/ml-fastvit/pretrained_checkpoints/fastervit_0_224_1k.pth.tar"
-    
-    VPT = True
-    VPT_PROMPT_LENGTH = 10
-    backbone = create_faster_vit(pretrained=True, vpt=VPT, vpt_prompt_length=VPT_PROMPT_LENGTH,model_path = backbone_path,freeze=True)
-
-    BATCH_SIZE = 8
-    EPOCHS = 60
-    LR = 6e-4
-    IMG_DIM = (224, 224)
-    NUM_CLASSES = 2
-    BACKBONE_ID='fastervit'
-    DATASETS = ['recon', 'sacson','kitti','asrl']
-
-    train(backbone,BATCH_SIZE,EPOCHS,LR,IMG_DIM,NUM_CLASSES, DATASETS, BACKBONE_ID)
-
-def test():
-    VPT = True
-    VPT_PROMPT_LENGTH = 10
-    backbone_path="/home/pcgta/Documents/playground/ml-fastvit/pretrained_checkpoints/fastervit_0_224_1k.pth.tar"
-    backbone = create_faster_vit(pretrained=True, model_path = backbone_path, vpt=VPT, vpt_prompt_length=VPT_PROMPT_LENGTH)
-    if VPT:
-        backbone = adjust_backbone_bias(backbone, VPT_PROMPT_LENGTH)
-    
-    IMG_DIM = (224, 224)
-
-    fastervit_checkpoint = 'checkpoints/fastervit-epoch=59-step=125880-b=8-lr=6e-04.ckpt'
-    test_images(backbone, fastervit_checkpoint, IMG_DIM, 'test_images', 'fastervit')
-
-
-if __name__=="__main__":
-    test()
-   # main()

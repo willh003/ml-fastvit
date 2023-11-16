@@ -13,7 +13,7 @@ import message_filters
 import csv
 
 class DataListener:
-    def __init__(self, cmd_topic, img_topic, log_dir):
+    def __init__(self, log_dir, cmd_topic='/car/mux/ackermann_cmd_mux/input/teleop', img_topic='/car/car/camera/color/image_raw'):
         self.max_velocity = rospy.get_param("~speed", 2.0)
         self.max_steering_angle = rospy.get_param("~max_steering_angle", 0.34)
 
