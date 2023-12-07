@@ -1,6 +1,6 @@
 
 traversability:
-  checkpoint_path: 'trav_checkpoints/fastervit-epoch=59-step=125880-b=8-lr=6e-04.ckpt'
+  checkpoint_path: 'trav_checkpoints/best_traversability.ckpt'
   vpt: True
   vpt_prompt_length: 10
   img_dim: 
@@ -12,7 +12,9 @@ navigation:
 
 training:
   dropout: .1
+  full_fine_tune: False
 
-device: 'cpu'
+
+device: 'cuda'
   
 

@@ -12,6 +12,13 @@ import os
 import message_filters
 import csv
 
+# def obs_callback(data, *args):
+#     print("Loggy.")
+#     return
+
+# def cmd_callback(data, *args):
+#     print("Logger.")
+#     return
 
 itr = 0
 only_every = 20
@@ -23,9 +30,12 @@ class DataListener:
         self.cmd_sub = message_filters.Subscriber(cmd_topic, AckermannDriveStamped, queue_size=10)
         self.obs_sub = message_filters.Subscriber(img_topic, Image, queue_size=10)
 
+        # # test
+        # rospy.Subscriber(cmd_topic, AckermannDriveStamped, cmd_callback)
+        # rospy.Subscriber(img_topic, Image, obs_callback)
 
         self.bridge= CvBridge()
-        self.ts = message_filters.ApproximateTimeSynchronizer([self.obs_sub, self.cmd_sub], 10, .1)
+        self.ts = message_filters.ApproximateTimeSynchronizer([self.obs_sub, self.cmd_sub], 100, 1)
 
         self.ts.registerCallback(self.obs_cb)
         self.data_dir = log_dir
@@ -70,7 +80,6 @@ if __name__ == "__main__":
     log_dir = Path("./datacollectortest").resolve()
 
     data_listener = DataListener(log_dir)
-    print("DataListener instance created")
 
     print("MUSHR Listener Spinning...")
     rospy.spin()

@@ -2,9 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
-from pytorch_lightning.utilities.types import OptimizerLRScheduler
 
-from fpn.fpn import PanopticFPN
+
+from bc_trav.fpn.fpn import PanopticFPN
 
 
 class CrossAttention(nn.Module):
@@ -81,10 +81,15 @@ class PriorFusionBackbone(nn.Module):
         - Applies cross attention to image and prior embeddings, with the prior as the queries (encoded sequence)
 
     """
-    def __init__(self, prior, encoder, prior_inp_dim, device='cuda', p_drop=.1):
+    def __init__(self, prior, encoder, prior_inp_dim, device='cuda', p_drop=.1, enable_backbone_grads = 'False'):
 
         """
-        counterintuitively, enc is treated as the transformer decoder, and prior as the encoder 
+        Inputs:
+            prior: image prior model. Will be used as the transformer encoder
+            encoder: image encoding model. Counterintuitively, will be used as the transformer decoder
+            prior_inp_dim: input dimension of the prior (necessary for patch embedding)
+            enable_backbone_grads: whether to enable grads for the prior/encoder, or just the cross attention
+            
         this allows enc to attend to parts of the prior's signal, and lets the output have the same dimension as the encoder
         since the encoder is already trained to be good for downstream navigation, we suspect that keeping this dimensionality will improve performance
         """
@@ -123,6 +128,9 @@ class PriorFusionBackbone(nn.Module):
         self.enc_dropout = nn.Dropout(p=p_drop)
         self.ln = nn.LayerNorm(d_enc_embed)
 
+        if not enable_backbone_grads:
+            self.disable_backbone_grads()
+
         self.to(self.device)
 
     def forward(self, x):
@@ -153,7 +161,12 @@ class PriorFusionBackbone(nn.Module):
 
         return ln_attn
 
+    def disable_backbone_grads(self):
+        for p in self.prior.parameters():
+            p.requires_grad_(False)
 
+        for p in self.enc.parameters():
+            p.requires_grad_(False)
 
 class SegmentationModel(pl.LightningModule):
     """
@@ -186,7 +199,7 @@ class SegmentationModel(pl.LightningModule):
         self.training_step_outputs = []
         self.validation_step_outputs = []
 
-    def configure_optimizers(self) -> OptimizerLRScheduler:
+    def configure_optimizers(self):
         if hasattr(self.backbone, 'trainable_params'):
             params =  list(self.head.parameters()) + self.backbone.trainable_params
         else:

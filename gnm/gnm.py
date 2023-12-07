@@ -3,8 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from typing import List, Dict, Optional, Tuple
-from gnm.modified_mobilenetv2 import MobileNetEncoder
-from gnm.base_model import BaseModel
+from bc_trav.gnm.modified_mobilenetv2 import MobileNetEncoder
+from bc_trav.gnm.base_model import BaseModel
 
 
 class GNM(BaseModel):

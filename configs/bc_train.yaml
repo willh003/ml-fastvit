@@ -1,0 +1,5 @@
+
+training:
+  batch_size: 16
+  epochs: 100
+  lr: 3e-4

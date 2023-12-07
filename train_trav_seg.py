@@ -98,7 +98,7 @@ def train(backbone, batch_size, epochs, lr, img_dim, num_classes, datasets=['rec
     transform = transforms.Compose(
     [
         transforms.RandomHorizontalFlip(),
-        transforms.CenterCrop(img_dim),
+        
     ]
 )
     train, val = get_train_val_datasets(base_src = '/home/pcgta/Documents/playground/distill/full_data',

@@ -1,10 +1,10 @@
 import torch
-from faster_vit import adjust_backbone_bias
-from gnm.gnm import GNM
-from faster_vit import FasterVitBackbone
+from bc_trav.faster_vit import adjust_backbone_bias
+from bc_trav.gnm.gnm import GNM
+from bc_trav.faster_vit import FasterVitBackbone
 from pathlib import Path
 from timm.models._builder import resolve_pretrained_cfg, _update_default_kwargs
-from models import PriorFusionBackbone, SegmentationModel
+from bc_trav.models import PriorFusionBackbone, SegmentationModel
 import yaml
 
 def ovt_factory(cfg_path):
@@ -20,12 +20,13 @@ def ovt_factory(cfg_path):
     trav_img_dim = tuple(cfg['traversability']['img_dim'])
     nav_checkpoint_path = cfg['navigation']['checkpoint_path']
     dropout = cfg['training']['dropout']
+    full_fine_tune = cfg['training']['full_fine_tune']
     device = cfg['device']
 
     prior = trav_prior_factory(trav_checkpoint_path, img_dim=trav_img_dim, vpt=vpt, vpt_prompt_length=vpt_prompt_length, device=device)
     nav_enc = gnm_encoder_factory(nav_checkpoint_path)
 
-    model = PriorFusionBackbone(prior=prior, encoder=nav_enc, prior_inp_dim=trav_img_dim, device=device, p_drop=dropout)
+    model = PriorFusionBackbone(prior=prior, encoder=nav_enc, prior_inp_dim=trav_img_dim, device=device, p_drop=dropout, enable_backbone_grads=full_fine_tune)
     return model
 
 def gnm_encoder_factory(ckpt):
