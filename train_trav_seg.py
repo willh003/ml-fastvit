@@ -3,7 +3,8 @@ import os
 import torch.nn.functional as F
 import torchvision
 from torchvision import transforms
-import pytorch_lightning as pl
+from lightning.pytorch import LightningModule, Trainer
+from lightning.pytorch.callbacks import ModelCheckpoint
 from utils import save_mask
 
 from lightning.pytorch.loggers import TensorBoardLogger
@@ -122,31 +123,13 @@ def train(backbone, batch_size, epochs, lr, img_dim, num_classes, datasets=['rec
 
     model = SegmentationModel(backbone=backbone, num_classes = num_classes, img_dim=img_dim,backbone_id=backbone_id, lr = lr)
     checkpoint_file=  backbone_id + '-{epoch}-{step}' + f'-b={batch_size}-lr={lr:.0e}'
-    checkpoint_callback = pl.callbacks.ModelCheckpoint(dirpath='trav_checkpoints/',filename=checkpoint_file, every_n_epochs=5, monitor ='train_loss')
+    checkpoint_callback = ModelCheckpoint(dirpath='trav_checkpoints/',filename=checkpoint_file, every_n_epochs=5, monitor ='train_loss')
 
 
 
     logger = TensorBoardLogger("tb_logs", name=backbone_id)
-    trainer = pl.Trainer(max_epochs=epochs, callbacks=[checkpoint_callback], logger=logger)
+    trainer = Trainer(max_epochs=epochs, callbacks=[checkpoint_callback], logger=logger)
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader)
-
-def test_images(backbone, checkpoint, size, df, backbone_id='fastervit'):
-    h, w = size
-
-    sd = torch.load(checkpoint)['state_dict']
-    model = SegmentationModel(num_classes=2, img_dim=(h, w), backbone=backbone, backbone_id=backbone_id)
-    model.load_state_dict(sd, strict=False)
-    model = model.cuda()
-
-    for f in os.listdir(df):
-        img = torchvision.io.read_image(os.path.join(df, f)).float()/256
-        if img.size()[1] < size[0] or img.size()[2] < size[1]:
-            img = F.interpolate(img[None], size, mode='bilinear').squeeze(0)
-
-        img = transforms.functional.center_crop(img, size)
-
-        out = model(img.cuda()[None]) 
-        save_mask(img.cpu().permute(1,2,0), out.argmax(dim=1)[0].float().cpu(), f'test_image_out/{f}_trained.png')
 
 
 def main():
@@ -166,19 +149,9 @@ def main():
 
     train(backbone,BATCH_SIZE,EPOCHS,LR,IMG_DIM,NUM_CLASSES, DATASETS, BACKBONE_ID)
 
-def test():
-    VPT = True
-    VPT_PROMPT_LENGTH = 10
-    backbone = faster_vit_factory(pretrained=False, vpt=VPT, vpt_prompt_length=VPT_PROMPT_LENGTH)
-    if VPT:
-        backbone = adjust_backbone_bias(backbone, VPT_PROMPT_LENGTH)
-    
-    IMG_DIM = (224, 224)
 
-    checkpoint = 'trav_checkpoints/fastervit-epoch=59-step=125880-b=8-lr=6e-04.ckpt'
-    test_images(backbone, checkpoint, IMG_DIM, 'test_images', 'fastervit')
 
 
 if __name__=="__main__":
-    test()
-   # main()
+    #test()
+    main()

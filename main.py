@@ -3,7 +3,6 @@ import os
 import torch.nn.functional as F
 import torchvision
 from torchvision import transforms
-import pytorch_lightning as pl
 from bc_trav.utils import save_mask
 
 from lightning.pytorch.loggers import TensorBoardLogger

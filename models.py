@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import pytorch_lightning as pl
-
+import lightning.pytorch as pl
+import numpy as np
 
 from bc_trav.fpn.fpn import PanopticFPN
 
@@ -135,21 +135,24 @@ class PriorFusionBackbone(nn.Module):
 
     def forward(self, x):
         """
-        x: (B, 6, C, H, W)
-        each point in x is a list of 6 recent images
+        x: (B, N, C, H, W)
+        each point in x is a list of N recent images (6 for gnm)
 
         returns: vector of dimension (b, n_enc_patches, d_enc_embed)
             - this equals the dimension output by the encoder model
         """ 
-        enc_embed = self.enc(x)
+
+        B, N, C, H, W = x.size()
+
+        enc_embed = self.enc(x.view(B, N*C, H, W)) # encoding on all images, stacked along channel
         b_enc, d_enc, h_enc, w_enc = enc_embed.size()
         enc_embed = enc_embed.view(b_enc, d_enc, h_enc * w_enc).transpose(-1, -2)
         enc_embed += self.enc_pos_embed
         enc_embed = self.enc_dropout(enc_embed)
 
-        # apply prior to most recent image only       
-        # TODO: ensure that -1 really is the most recent image
-        prior = self.prior(x[:, -3:, :, :]) 
+           
+        # TODO: if using most recent, ensure that -1 really is the most recent image
+        prior = self.prior(x[:,-1,:,:,:]) # prior on most recent image
 
         prior_embed = self.patch_embed(prior)
         prior_embed += self.prior_pos_embed
@@ -281,3 +284,88 @@ class SegmentationModel(pl.LightningModule):
         fpn = PanopticFPN(in_feats_shapes=fmap_dims, hidden_channels=128)
         
         return fpn
+
+class BC(pl.LightningModule):
+
+    def __init__(self, backbone,  action_dim, continuous=False, class_weights=None, input_dim = (6, 3, 224, 224),feature_dim= (49, 1280),lr=3e-4):
+        """
+        Args:
+            input_dim: the dimension of a single feature vector
+            action_dim: the dimension of the action vector (1 for continuous command, 3 for l/r/0)
+        """
+        
+        
+        super().__init__()
+
+        self.continuous = continuous
+
+        self.input_dim = input_dim
+        self.backbone = backbone
+        self.head = self.create_head(feature_dim, action_dim, continuous=continuous)
+        self.lr = lr
+        self.class_weights = class_weights
+        if continuous:
+            self.loss = lambda pred, trg: F.huber_loss(pred, trg)
+        else:
+            self.loss = lambda pred, trg: F.cross_entropy(pred, trg, weight=self.class_weights)
+
+
+    def forward(self, x):
+        B, _, _, _, _ = x.size()
+        x= x.view((B, *self.input_dim))
+
+        with torch.no_grad():
+            e = self.backbone(x)
+        pred = self.head(e)
+
+       
+        return pred
+
+    def training_step(self, batch, batch_idx):
+        src, trg = batch
+
+        pred = self.forward(src)
+
+        loss = self.loss(pred, trg)
+
+        self.log("train_loss", loss, on_epoch=True, prog_bar=True, logger=True)
+
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        src, trg = batch
+
+        probs = self.forward(src)
+        loss = self.loss(probs, trg) 
+        self.log("val_loss", loss, on_epoch=True, prog_bar=True, logger=True)
+        return loss
+
+    def configure_optimizers(self):
+        backbone_params = [p for p in self.backbone.parameters() if p.requires_grad]
+        head_params = list(self.head.parameters())
+        optim = torch.optim.AdamW(head_params + backbone_params, lr=self.lr)
+
+        return optim
+
+    def disable_grads(self):
+        for param in self.parameters():
+            param.requires_grad = False
+
+    def create_head(self, in_dim, out_dim, continuous=False):
+
+        *in_dim, = in_dim
+        flattened_dim = np.prod(in_dim)
+
+        if continuous:
+            return nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(flattened_dim, 256),
+                nn.Linear(256, out_dim) 
+            )
+        else:
+            return nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(flattened_dim, 256),
+                nn.Linear(256, out_dim), 
+                nn.Softmax()   
+            )

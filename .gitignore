@@ -6,6 +6,9 @@ lightning_logs/
 test_image_out/
 fastervit_checkpoints/
 gnm/gnm_checkpoints/
+bc_data
+benchmark_results
+bc_checkpoints
 .vscode/
 
 # Byte-compiled / optimized / DLL files

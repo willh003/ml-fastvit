@@ -1,5 +1,9 @@
+dimensions:
+  action_dim: 3
 
 training:
   batch_size: 16
   epochs: 100
-  lr: 3e-4
+  lr: 3e-6
+  df: /home/pcgta/Documents/playground/bc_trav/bc_trav/bc_data/Lincolns_Inn_Chapel_Undercroft
+  device: 'cuda'

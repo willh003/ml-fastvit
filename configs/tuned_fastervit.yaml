@@ -1,6 +1,6 @@
 
 traversability:
-  checkpoint_path: 'trav_checkpoints/best_traversability.ckpt'
+  checkpoint_path: /home/pcgta/Documents/playground/bc_trav/bc_trav/trav_checkpoints/best_traversability.ckpt
   vpt: True
   vpt_prompt_length: 10
   img_dim: 
@@ -8,7 +8,7 @@ traversability:
     - 224
 
 navigation:
-  checkpoint_path: 'gnm/gnm_checkpoints/obsnet.pt'
+  checkpoint_path: /home/pcgta/Documents/playground/bc_trav/bc_trav/gnm/gnm_checkpoints/obsnet.pt
 
 training:
   dropout: .1
