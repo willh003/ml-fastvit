@@ -4,7 +4,6 @@ import torch.nn.functional as F
 import lightning.pytorch as pl
 import numpy as np
 
-from bc_trav.fpn.fpn import PanopticFPN
 
 
 class CrossAttention(nn.Module):
@@ -173,62 +172,52 @@ class PriorFusionBackbone(nn.Module):
 
 class SegmentationModel(pl.LightningModule):
     """
-    A lightning module for fine tuning semantic segmentation tasks on top of a pretrained image encoder
-    Uses fpn implementation from https://github.com/AdeelH/pytorch-fpn
+    A lightning module for fine tuning semantic segmentation tasks
     """
-    def __init__(self, num_classes, img_dim, backbone=None,backbone_id='fastervit', lr=1e-3):
-        """
-        num_classes: number of downstream classes to segment
+    def __init__(self, model, img_dim, params=None, lr=1e-3):
+        """        
+        model: a segmentation model, returning class probabilities
+        
         img_dim: tuple representing (h,w) of input images
-        backbone: a ViT backbone returning a set of embeddings at different stages of convolution/attention
-        backbone_id: currently only fastervit is supported
+
         lr: initial learning rate
+        
+        params: specify the trainable params from model (defaults to self.params())
         """
         super().__init__()
-        self.num_classes = num_classes
 
-        self.backbone = backbone
-        if backbone_id == 'fastervit':
-            embed_dims = [64, 128, 256, 512]
-        elif backbone_id=='fastvit':
-            embed_dims = [76, 152, 304, 608]
-        else:
-            raise Exception('Unimplemented backbone')
 
-        self.head = self.fpn_head(embed_dims, img_dim[0], img_dim[1])
+        self.model = model
+
         self.img_dim = img_dim
         self.lr = lr
 
         self.training_step_outputs = []
         self.validation_step_outputs = []
+        if params is None:
+            self.trainable_params = [p for p in self.parameters() if p.requires_grad]
+        else:
+            self.trainable_params = params
+
 
     def configure_optimizers(self):
-        if hasattr(self.backbone, 'trainable_params'):
-            params =  list(self.head.parameters()) + self.backbone.trainable_params
-        else:
-            params = self.head.parameters()
-        optim = torch.optim.AdamW(params, lr=self.lr)
+
+        optim = torch.optim.AdamW(self.trainable_params, lr=self.lr)
 
         return optim
 
     def forward(self, img):
-        embeddings = self.backbone(img)
-        pred = self.head(embeddings)
-        pred_interp = F.interpolate(pred, size=self.img_dim, mode='bilinear')
-        return pred_interp
+        pred = self.model(img)
+
+        #pred_interp = F.interpolate(pred, size=self.img_dim, mode='bilinear')
+        return pred
 
     def training_step(self, batch, batch_idx):
         src, trg = batch
-
-        # backbone is frozen, so disable gradients
-        with torch.no_grad():
-            embeddings = self.backbone(src)
-        
-        probs = self.head(embeddings)
-        probs_interp = F.interpolate(probs, size=self.img_dim, mode='bilinear')
+        probs = self.forward(src)
         #NOTE: should loss be computed before or after image interpolation
-        loss = F.cross_entropy(probs_interp, trg)
-        
+
+        loss = F.cross_entropy(probs, torch.argmax(trg, dim=1))
         self.log("train_loss", loss, on_epoch=True, prog_bar=True, logger=True)
 
         return loss
@@ -238,52 +227,17 @@ class SegmentationModel(pl.LightningModule):
         src, trg = batch
 
         probs = self.forward(src)
-        loss = F.cross_entropy(probs, trg)
+        
+        loss = F.cross_entropy(probs, torch.argmax(trg, dim=1))
         self.log("val_loss", loss, on_epoch=True, prog_bar=True, logger=True)
         return loss
 
     def on_train_epoch_end(self):
-        x = [p for p in self.head.parameters()]
+        x = list(self.parameters())
 
-        self.log('mean first param', x[0].mean(), prog_bar=True) # log first param to ensure gradients are being calculated
-
-        avg_loss = torch.tensor(self.training_step_outputs).mean()
-        self.log("train_loss", avg_loss, prog_bar=True)
-        self.training_step_outputs = []
-
-    def on_validation_epoch_end(self):
-        avg_loss = torch.tensor(self.validation_step_outputs).mean()
-        self.log("val_loss", avg_loss, prog_bar=True)
-        self.validation_step_outputs = []
+        self.log('mean first param', x[0].mean(), logger=True) # log first param to ensure gradients are being calculated
 
 
-    def linear_head(self, embed_dim):
-        """
-        Returns a linear prediction layer to apply to the ViT embeddings
-        Equivalent to learning the language prompt in Fast-ViT space that matches "traversable" in CLIP space
-        """
-        model = torch.nn.Sequential(
-            torch.nn.Linear(embed_dim, self.num_classes)
-        )
-        return model
-
-    def fpn_head(self, embed_dims, img_height, img_width):
-        """
-        Returns an FPN-based head, according to 
-        Kirillov, et al: Panoptic Feature Pyramid Networks https://arxiv.org/abs/1901.02446 
-        PanopticFPN class adopted from pytorch-fpn: https://github.com/AdeelH/pytorch-fpn  
-        """
-
-        fmap_dims = []
-        for i, dim in enumerate(embed_dims):
-
-            w = round(img_width/(2**(i+2)))
-            h = round(img_height/(2**(i+2)))
-            fmap_dims.append((1, dim, h, w))
-
-        fpn = PanopticFPN(in_feats_shapes=fmap_dims, hidden_channels=128)
-        
-        return fpn
 
 class BC(pl.LightningModule):
 
@@ -369,3 +323,45 @@ class BC(pl.LightningModule):
                 nn.Linear(256, out_dim), 
                 nn.Softmax()   
             )
+        
+
+class FPNViTModule(nn.Module):
+    def __init__(self, backbone, fpn):
+        super().__init__()
+        self.backbone = backbone
+        self.fpn = fpn
+
+    def forward(self, x):
+        emb = self.backbone(x)
+        out = self.fpn(emb)
+        return out
+
+def linear_head(self, embed_dim):
+    """
+    Returns a linear prediction layer to apply to the ViT embeddings
+    Equivalent to learning the language prompt in Fast-ViT space that matches "traversable" in CLIP space
+    """
+    model = torch.nn.Sequential(
+        torch.nn.Linear(embed_dim, self.num_classes)
+    )
+    return model
+
+def fpn_head(embed_dims, img_height, img_width):
+    """
+    Returns an FPN-based head, according to 
+    Kirillov, et al: Panoptic Feature Pyramid Networks https://arxiv.org/abs/1901.02446 
+    PanopticFPN class adopted from pytorch-fpn: https://github.com/AdeelH/pytorch-fpn  
+    """
+    from bc_trav.fpn.fpn import PanopticFPN
+
+    fmap_dims = []
+    for i, dim in enumerate(embed_dims):
+
+        w = round(img_width/(2**(i+2)))
+        h = round(img_height/(2**(i+2)))
+        fmap_dims.append((1, dim, h, w))
+
+    fpn = PanopticFPN(in_feats_shapes=fmap_dims, hidden_channels=128)
+           
+
+    return fpn

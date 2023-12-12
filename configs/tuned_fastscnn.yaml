@@ -1,0 +1,20 @@
+
+traversability:
+  checkpoint_path: /home/pcgta/Documents/bc_trav/bc_trav/trav_checkpoints/scnn-epoch=19-b=8-lr=6e-04sacson_recon_kitti_asrl.ckpt
+  vpt: True
+  vpt_prompt_length: 10
+  img_dim: 
+    - 224
+    - 224
+
+navigation:
+  checkpoint_path: /home/pcgta/Documents/playground/bc_trav/bc_trav/gnm/gnm_checkpoints/obsnet.pt
+
+training:
+  dropout: .1
+  full_fine_tune: False
+
+
+device: 'cuda'
+  
+

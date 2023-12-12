@@ -8,18 +8,19 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from utils import save_mask
 
 from lightning.pytorch.loggers import TensorBoardLogger
-
-from models import SegmentationModel
-from model_factories import faster_vit_factory, adjust_backbone_bias
+from bc_trav.models import SegmentationModel, fpn_head
 
 
 class TraversabilityDataset(torch.utils.data.Dataset):
-    def __init__(self, src_paths, trg_paths, transform=None):
+    def __init__(self, src_paths, trg_paths, img_dim = (224,224), transform=None, datasets=['recon']):
         """ 
         Construct an indexed list of image paths and labels
         """
         self.src_paths, self.trg_paths = src_paths, trg_paths 
         self.transform = transform
+        self.img_dim = img_dim
+        if 'sacson' in datasets:
+            self.interp = True # If sacson in datasets, then some images will be (120, 160), so need to upsample
 
     def __getitem__(self, n):
         """ 
@@ -29,7 +30,11 @@ class TraversabilityDataset(torch.utils.data.Dataset):
         src =  torchvision.io.read_image(self.src_paths[n]).float()/256
 
         trg = torch.load(self.trg_paths[n])
-        
+
+        if self.interp:
+            src = F.interpolate(src[None], size=self.img_dim, mode='bilinear')[0]
+            trg = F.interpolate(trg[None], size=self.img_dim, mode='bilinear')[0]
+
         if self.transform:
             src = self.transform(src)
             trg = self.transform(trg)
@@ -91,19 +96,25 @@ def get_paths(base_src, base_trg, datasets):
 def get_train_val_datasets(base_src, base_trg, datasets, transform, split=.85):
     src_paths, trg_paths= get_paths(base_src, base_trg, datasets)
     split_loc = int(len(src_paths) * split)
-    train_data = TraversabilityDataset(src_paths[:split_loc], trg_paths[:split_loc], transform)
-    val_data = TraversabilityDataset(src_paths[split_loc:], trg_paths[split_loc:], transform)
+    train_data = TraversabilityDataset(src_paths[:split_loc], trg_paths[:split_loc], img_dim=(224,224), transform= transform, datasets=datasets )
+    val_data = TraversabilityDataset(src_paths[split_loc:], trg_paths[split_loc:], img_dim=(224,224), transform=transform, datasets=datasets)
     return train_data, val_data
 
-def train(backbone, batch_size, epochs, lr, img_dim, num_classes, datasets=['recon'], backbone_id = 'fastervit'):
-    transform = transforms.Compose(
-    [
-        transforms.RandomHorizontalFlip(),
-        
-    ]
-)
-    train, val = get_train_val_datasets(base_src = '/home/pcgta/Documents/playground/distill/full_data',
-                                        base_trg = '/home/pcgta/Documents/playground/distill/full_data_preds',
+def train(model, batch_size, epochs, lr, datasets=['recon'], backbone_id = 'fastervit'):
+    
+    if 'sacson' in datasets:
+        transform = transforms.Compose(
+        [
+            transforms.RandomHorizontalFlip(),
+        ])
+    else:   
+        transform = transforms.Compose(
+            [
+            transforms.RandomHorizontalFlip(),
+            transforms.CenterCrop((224, 224))
+            ])
+    train, val = get_train_val_datasets(base_src = '/home/pcgta/Documents/bc_trav/bc_trav/distill_data/full_data',
+                                        base_trg = '/home/pcgta/Documents/bc_trav/bc_trav/distill_data/full_data_preds',
                                         datasets=datasets,
                                         transform = transform,
                                         split=.85)
@@ -121,9 +132,9 @@ def train(backbone, batch_size, epochs, lr, img_dim, num_classes, datasets=['rec
                                                shuffle = False)
 
 
-    model = SegmentationModel(backbone=backbone, num_classes = num_classes, img_dim=img_dim,backbone_id=backbone_id, lr = lr)
-    checkpoint_file=  backbone_id + '-{epoch}-{step}' + f'-b={batch_size}-lr={lr:.0e}'
-    checkpoint_callback = ModelCheckpoint(dirpath='trav_checkpoints/',filename=checkpoint_file, every_n_epochs=5, monitor ='train_loss')
+
+    checkpoint_file=  backbone_id + '-{epoch}' + f'-b={batch_size}-lr={lr:.0e}' + '_'.join(datasets)
+    checkpoint_callback = ModelCheckpoint(dirpath='trav_checkpoints/',filename=checkpoint_file, every_n_epochs=1, monitor ='train_loss')
 
 
 
@@ -132,26 +143,55 @@ def train(backbone, batch_size, epochs, lr, img_dim, num_classes, datasets=['rec
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
 
-def main():
+
+def train_fastervit():
+
+    from model_factories import faster_vit_factory
+
     backbone_path="fastervit_checkpoints/fastervit_0_224_1k.pth.tar"
-    
     VPT = True
     VPT_PROMPT_LENGTH = 10
     backbone = faster_vit_factory(pretrained=True, vpt=VPT, vpt_prompt_length=VPT_PROMPT_LENGTH,model_path = backbone_path,freeze=True)
 
-    BATCH_SIZE = 8
+    BATCH_SIZE = 16
     EPOCHS = 60
-    LR = 6e-4
+    LR = 6e-3
     IMG_DIM = (224, 224)
-    NUM_CLASSES = 2
     BACKBONE_ID='fastervit'
     DATASETS = ['recon', 'sacson','kitti','asrl']
+    
+    head = fpn_head(embed_dims = [64, 128, 256, 512], img_height=IMG_DIM[0], img_width=IMG_DIM[1])
+    
+    
+    if hasattr(backbone, 'trainable_params'):
+        params =  list(head.parameters()) + backbone.trainable_params
+    else:
+        params = head.parameters()
 
-    train(backbone,BATCH_SIZE,EPOCHS,LR,IMG_DIM,NUM_CLASSES, DATASETS, BACKBONE_ID)
+    model = torch.nn.Sequential(backbone, head)
+    trainable_model = SegmentationModel(model=model, img_dim=IMG_DIM,params = params, lr = LR)
+    
+    train(trainable_model,BATCH_SIZE,EPOCHS,LR, DATASETS, BACKBONE_ID)
+
+def train_fastscnn():
+    from fastscnn.models.fast_scnn import get_fast_scnn
+
+    BATCH_SIZE = 8
+    EPOCHS = 60
+    LR = 6e-3
+    IMG_DIM = (224, 224)
+    BACKBONE_ID='scnn'
+    DATASETS = ['sacson', 'recon','kitti','asrl']
+
+    model = get_fast_scnn('citys', pretrained=True, root='/home/pcgta/Documents/fastscnn/fastscnn/weights')
+    model.activate_n_class_training(2) # change the model classifier to be 2 class instead of 20 class (cityscape default)
+    trainable_model = SegmentationModel(model=model, img_dim=IMG_DIM, lr = LR)
 
 
 
+    train(trainable_model,BATCH_SIZE,EPOCHS,LR, DATASETS, BACKBONE_ID)
 
 if __name__=="__main__":
-    #test()
-    main()
+    train_fastervit()
+    #train_fastscnn()
+    pass

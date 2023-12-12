@@ -1,10 +1,8 @@
 import torch
-from bc_trav.faster_vit import adjust_backbone_bias
 from bc_trav.gnm.gnm import GNM
-from bc_trav.faster_vit import FasterVitBackbone
 from pathlib import Path
 from timm.models._builder import resolve_pretrained_cfg, _update_default_kwargs
-from bc_trav.models import PriorFusionBackbone, SegmentationModel, BC
+from bc_trav.models import PriorFusionBackbone, SegmentationModel, BC, fpn_head, FPNViTModule
 import yaml
 from bc_trav.utils import open_yaml
 from lightning.pytorch import LightningModule
@@ -53,13 +51,17 @@ def gnm_encoder_factory(ckpt):
     return obsnet
 
 def trav_prior_factory(ckpt, img_dim=(224, 224), vpt=True, vpt_prompt_length=10, device='cuda'):
-
+    from bc_trav.faster_vit import adjust_backbone_bias
     backbone = faster_vit_factory(pretrained=False, vpt=vpt, vpt_prompt_length=vpt_prompt_length)
     if vpt:
         backbone = adjust_backbone_bias(backbone, vpt_prompt_length)
+    head = fpn_head(embed_dims = [64, 128, 256, 512], img_height=img_dim[0], img_width=img_dim[1])
+    
+    
+    model = FPNViTModule(backbone, head)
 
     sd = torch.load(ckpt)['state_dict']
-    trav = SegmentationModel(num_classes=2, img_dim=img_dim, backbone=backbone, backbone_id='fastervit')
+    trav = SegmentationModel(model=model,img_dim=img_dim)
     trav.load_state_dict(sd, strict=False)
     trav = trav.to(device)
     return trav
@@ -70,6 +72,8 @@ def faster_vit_factory(pretrained=False, **kwargs):
     
     If pretrained, loads the weights defined by kwarg "model_path"
     """
+    from bc_trav.faster_vit import  FasterVitBackbone
+
     depths = kwargs.pop("depths", [2, 3, 6, 5])
     num_heads = kwargs.pop("num_heads", [2, 4, 8, 16])
     window_size = kwargs.pop("window_size", [7, 7, 7, 7])
@@ -102,6 +106,22 @@ def faster_vit_factory(pretrained=False, **kwargs):
             torch.hub.download_url_to_file(url=url, dst=model_path)
         model._load_state_dict(model_path)
     return model
+
+def fast_scnn_factory(ckpt,  img_dim=(224,224), device='cuda',):
+    from fastscnn.models.fast_scnn import get_fast_scnn
+
+    model = get_fast_scnn('citys', pretrained=False)
+    model.activate_n_class_training(2)
+    model.eval()
+
+    sd = torch.load(ckpt)['state_dict']
+    trav = SegmentationModel(model=model, img_dim=img_dim)
+    trav.load_state_dict(sd, strict=False)
+    trav = trav.to(device)
+
+    return trav
+
+
 
 def bc_fusion_factory(trav_cfg_path, train_cfg_path, class_weights=None, ckpt=None , device='cuda', lr=3e-4) -> LightningModule:
 
@@ -164,3 +184,4 @@ def bc_only_trav_factory(trav_cfg_path,train_cfg_path, ckpt=None, device='cuda')
         sd = torch.load(ckpt)['state_dict']
         model.load_state_dict(sd, strict=False)
     return model.to(device)
+
