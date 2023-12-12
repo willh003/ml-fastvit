@@ -1,6 +1,5 @@
 # Will
 trav_checkpoints/
-fpn/
 tb_logs/
 lightning_logs/
 test_image_out/

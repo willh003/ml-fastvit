@@ -73,7 +73,51 @@ class PatchEmbedding(nn.Module):
     def forward(self, x):
         # Output shape: (batch size, no. of channels, no. of patches)
         return self.conv(x).flatten(2).transpose(1,2)
+
+class PriorSelfAttn(nn.Module):
+    """
+        A backbone that applies self attention to the prior's output, and returns an action
+        Takes inputs of size (B, N, C, H, W), where N is the number of images in memory
+    """
+    def __init__(self, model, inp_dim, device='cuda', p_drop=.1):
+        super(PriorSelfAttn, self).__init__()
+
+        self.prior_inp_dim = inp_dim
+        self.device = device
+        p_drop = p_drop
+
+        self.model = model
+
+        d_prior_embed = 256 
+        prior_patch_size = 28
+        
+        self.attn = CrossAttention(d_enc = d_prior_embed, d_dec=d_prior_embed, d_model=d_prior_embed)
+        self.patch_embed = PatchEmbedding(
+                            img_size=self.prior_inp_dim,
+                            patch_size=prior_patch_size,
+                            embed_dim = d_prior_embed)
+        
+        self.prior_pos_embed = nn.Parameter(torch.randn(1, self.patch_embed.num_patches, d_prior_embed))
+        self.prior_dropout = nn.Dropout(p=p_drop)
+        self.ln = nn.LayerNorm(d_prior_embed)
+
     
+    def forward(self, x):
+        B, N, C, H, W = x.size()
+        x = x.view(N*B, C, H, W)
+            
+        prior = self.model(x) # prior on most recent N images
+        _, *dim = prior.size()
+        prior = prior.view(B, N, *dim)
+        prior_embed = self.patch_embed(prior)
+        prior_embed += self.prior_pos_embed
+        prior_embed = self.prior_dropout(prior_embed)
+
+        attn_out = self.attn(prior_embed, prior_embed)
+        res_attn = attn_out + prior_embed
+        ln_attn = self.ln(res_attn)
+
+        return ln_attn
 
 class PriorFusionBackbone(nn.Module):
     """
@@ -81,7 +125,7 @@ class PriorFusionBackbone(nn.Module):
         - Applies cross attention to image and prior embeddings, with the prior as the queries (encoded sequence)
 
     """
-    def __init__(self, prior, encoder, prior_inp_dim, device='cuda', p_drop=.1, enable_backbone_grads = 'False'):
+    def __init__(self, prior, encoder, prior_inp_dim, device='cuda', p_drop=.1, enable_backbone_grads = False):
 
         """
         Inputs:
@@ -141,7 +185,6 @@ class PriorFusionBackbone(nn.Module):
         returns: vector of dimension (b, n_enc_patches, d_enc_embed)
             - this equals the dimension output by the encoder model
         """ 
-
         B, N, C, H, W = x.size()
 
         enc_embed = self.enc(x.view(B, N*C, H, W)) # encoding on all images, stacked along channel
@@ -210,6 +253,12 @@ class SegmentationModel(pl.LightningModule):
         optim = torch.optim.AdamW(params, lr=self.lr)
 
         return optim
+
+    def forward_single_layer(self, img):
+        embeddings = self.backbone(img)
+        pred = self.head(embeddings)
+        pred_interp = F.interpolate(pred, size=self.img_dim, mode='bilinear')
+        return pred_interp[:,0,:,:] # get only the first layer (since probabilities sum to 1)
 
     def forward(self, img):
         embeddings = self.backbone(img)
@@ -287,11 +336,12 @@ class SegmentationModel(pl.LightningModule):
 
 class BC(pl.LightningModule):
 
-    def __init__(self, backbone,  action_dim, continuous=False, class_weights=None, input_dim = (6, 3, 224, 224),feature_dim= (49, 1280),lr=3e-4):
+    def __init__(self, backbone,  action_dim, continuous=False, class_weights=None, stack_method = None,feature_dim= (49, 1280),lr=3e-4):
         """
         Args:
             input_dim: the dimension of a single feature vector
             action_dim: the dimension of the action vector (1 for continuous command, 3 for l/r/0)
+            stack_method: 'batch' to stack images along the batch, 'channel' to stack them along channel, None to not stack
         """
         
         
@@ -299,7 +349,6 @@ class BC(pl.LightningModule):
 
         self.continuous = continuous
 
-        self.input_dim = input_dim
         self.backbone = backbone
         self.head = self.create_head(feature_dim, action_dim, continuous=continuous)
         self.lr = lr
@@ -309,16 +358,28 @@ class BC(pl.LightningModule):
         else:
             self.loss = lambda pred, trg: F.cross_entropy(pred, trg, weight=self.class_weights)
 
+        if stack_method is not None and stack_method not in ['batch', 'channel']:
+            raise Exception(f'Invalid stack method: {stack_method}')
+        self.stack_method = stack_method
+
 
     def forward(self, x):
-        B, _, _, _, _ = x.size()
-        x= x.view((B, *self.input_dim))
+        B, N, C, H, W = x.size()
+        if self.stack_method == 'batch':
+            x = x.view(N*B, C, H, W)
+        elif self.stack_method == 'channel':
+            x = x.view(B, N*C, H, W)
+
 
         with torch.no_grad():
             e = self.backbone(x)
+
+        if self.stack_method == 'batch':
+            _, *dim = e.size()
+            e = e.view(B, N, *dim)
+
         pred = self.head(e)
 
-       
         return pred
 
     def training_step(self, batch, batch_idx):
@@ -327,7 +388,6 @@ class BC(pl.LightningModule):
         pred = self.forward(src)
 
         loss = self.loss(pred, trg)
-
         self.log("train_loss", loss, on_epoch=True, prog_bar=True, logger=True)
 
         return loss

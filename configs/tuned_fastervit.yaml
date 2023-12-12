@@ -1,6 +1,6 @@
 
 traversability:
-  checkpoint_path: /home/pcgta/Documents/playground/bc_trav/bc_trav/trav_checkpoints/best_traversability.ckpt
+  checkpoint_path: /home/pcgta/Documents/playground/bc_trav/bc_trav/trav_checkpoints/fastervit-epoch=28-b=16-lr=6e-03recon_sacson_kitti_asrl.ckpt
   vpt: True
   vpt_prompt_length: 10
   img_dim: 
@@ -11,7 +11,7 @@ navigation:
   checkpoint_path: /home/pcgta/Documents/playground/bc_trav/bc_trav/gnm/gnm_checkpoints/obsnet.pt
 
 training:
-  dropout: .1
+  dropout: .05
   full_fine_tune: False
 
 

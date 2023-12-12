@@ -85,7 +85,6 @@ def get_paths(base_src, base_trg, datasets):
                 src_paths += new_src
                 trg_paths += new_trg
 
-    #src_paths, trg_paths = shuffle_paths(src_paths, trg_paths)
     return src_paths, trg_paths
 
 def get_train_val_datasets(base_src, base_trg, datasets, transform, split=.85):

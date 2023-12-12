@@ -89,6 +89,8 @@ def test_seg_model(model, input_dim, base_src, base_trg, datasets, metric, exp_n
         writer.writerow(['mean jaccard (miou)', 'mean latency (ms)', 'st dev latency'])
         writer.writerow([avg_metric, mean_syn, std_syn])
 
+    breakpoint()
+
 def get_pr(y, y_hat):
     thresholds = torch.range(0, 1, .02)
     precisions = []
@@ -166,6 +168,24 @@ def time_per_image(model, exp_name):
 
     print(f'{1000 / mean_syn} hz' )
 
+def run_on_one(model, path):
+    img =  torchvision.io.read_image(path).float()/256
+
+    
+    _,x,y = img.size()
+
+    img_interp = F.interpolate(img[None], input_dim, mode='bilinear').squeeze(0)
+
+
+    out = model(img_interp.cuda()[None]) 
+
+    out_interp = F.interpolate(out, size=(x,y), mode='bilinear').detach().cpu()[0]
+    plt.imshow(img.permute(1,2,0))
+    plt.imshow(torch.argmax(out_interp, dim=0), cmap='jet', alpha=.3)
+
+    savepath = path.split('.')[0] + 'vit-sacson.png'
+    plt.savefig(savepath)
+
 if __name__ == "__main__":
     data_base =  '/home/pcgta/Documents/playground/distill/full_data'
     data_ovseg_preds = '/home/pcgta/Documents/playground/distill/full_data_preds'
@@ -175,10 +195,14 @@ if __name__ == "__main__":
     fastervit_cfg = '/home/pcgta/Documents/playground/bc_trav/bc_trav/configs/tuned_fastervit.yaml'
     fastervit = get_fastervit_trav(fastervit_cfg)
     input_dim =  open_yaml(fastervit_cfg)['traversability']['img_dim']
+    
+    
+    run_on_one(fastervit, '/home/pcgta/Documents/playground/bc_trav/bc_trav/EXAMPLES/000003-worst.png')
+    breakpoint()
     test_seg_model(fastervit, 
                    input_dim,
                     data_base,
                     data_ovseg_preds,
                     test_datasets, 
                     metric, 
-                    exp_name='fastervit_miou')
+                    exp_name='fastervit_sanity_check')

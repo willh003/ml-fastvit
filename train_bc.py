@@ -10,7 +10,7 @@ import torchvision
 import csv
 import os
 from torchvision import transforms
-from bc_trav.model_factories import bc_fusion_factory, bc_no_trav_factory, bc_only_trav_factory
+from bc_trav.model_factories import get_factory_from_type
 from bc_trav.utils import *
 
 from pathlib import Path
@@ -136,32 +136,40 @@ def train(trav_cfg_path, train_cfg_path):
     lr = cfg['training']['lr']
     base_df = cfg['training']['df']
     device = cfg['training']['device']
+    #model_type = cfg['model_type']
+
+    ### ONLY FOR OVERNIGHT TRAINING:
+
+    for model_type in ['trav', 'image', 'fusion']:
+        
+        train, val, class_weights = get_train_val_datasets(base = base_df,
+                                            split=.85)
+
+        train_loader = torch.utils.data.DataLoader(train,
+                                                batch_size = batch_size,
+                                                num_workers = 10,
+                                                shuffle = True,
+                                                drop_last=True)
+        val_loader = torch.utils.data.DataLoader(val,
+                                                batch_size = batch_size,
+                                                num_workers = 10,
+                                                shuffle = False,
+                                                drop_last=True)
+
+        checkpoint_file=model_type + '-{epoch}-{step}' + f'-b={batch_size}-lr={lr}'
+
+        checkpoint_callback = pl.callbacks.ModelCheckpoint(dirpath='bc_checkpoints/',filename=checkpoint_file, every_n_epochs=1, monitor ='train_loss')
+
+        logger = TensorBoardLogger("tb_logs", name="bc")
+        trainer = pl.Trainer(max_epochs=epochs, callbacks=[checkpoint_callback], logger=logger)
 
 
-    train, val, class_weights = get_train_val_datasets(base = base_df,
-                                        split=.85)
+        factory = get_factory_from_type(model_type)
+        
+        model = factory(trav_cfg_path, train_cfg_path,class_weights=class_weights, device=device, lr=float(lr))
 
-    train_loader = torch.utils.data.DataLoader(train,
-                                               batch_size = batch_size,
-                                               num_workers = 10,
-                                               shuffle = True,
-                                               drop_last=True)
-    val_loader = torch.utils.data.DataLoader(val,
-                                               batch_size = batch_size,
-                                               num_workers = 10,
-                                               shuffle = False,
-                                               drop_last=True)
 
-    checkpoint_file='bc' + '-{epoch}-{step}' + f'-b={batch_size}-lr={lr}'
-
-    checkpoint_callback = pl.callbacks.ModelCheckpoint(dirpath='bc_checkpoints/',filename=checkpoint_file, every_n_epochs=5, monitor ='train_loss')
-
-    logger = TensorBoardLogger("tb_logs", name="bc")
-    trainer = pl.Trainer(max_epochs=epochs, callbacks=[checkpoint_callback], logger=logger)
-
-    model = bc_no_trav_factory(trav_cfg_path, train_cfg_path,class_weights=class_weights, device=device, lr=float(lr))
-
-    trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+        trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
 
 

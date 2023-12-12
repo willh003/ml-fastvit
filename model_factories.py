@@ -4,7 +4,7 @@ from bc_trav.gnm.gnm import GNM
 from bc_trav.faster_vit import FasterVitBackbone
 from pathlib import Path
 from timm.models._builder import resolve_pretrained_cfg, _update_default_kwargs
-from bc_trav.models import PriorFusionBackbone, SegmentationModel, BC
+from bc_trav.models import PriorFusionBackbone, PriorSelfAttn, SegmentationModel, BC
 import yaml
 from bc_trav.utils import open_yaml
 from lightning.pytorch import LightningModule
@@ -103,7 +103,7 @@ def faster_vit_factory(pretrained=False, **kwargs):
         model._load_state_dict(model_path)
     return model
 
-def bc_fusion_factory(trav_cfg_path, train_cfg_path, class_weights=None, ckpt=None , device='cuda', lr=3e-4) -> LightningModule:
+def bc_fusion_factory(trav_cfg_path, train_cfg_path, class_weights=None, ckpt=None , device='cuda', lr=3e-4, **kwargs) -> LightningModule:
 
     backbone = ovt_factory(trav_cfg_path)
     train_cfg = open_yaml(train_cfg_path)
@@ -122,8 +122,8 @@ def bc_fusion_factory(trav_cfg_path, train_cfg_path, class_weights=None, ckpt=No
     return model.to(device)
 
 
-def bc_no_trav_factory(cfg_path,train_cfg_path, class_weights=None, ckpt=None, device='cuda', lr=3e-4):
-    cfg = open_yaml(cfg_path)
+def bc_no_trav_factory(trav_cfg_path,train_cfg_path, class_weights=None, ckpt=None, device='cuda', lr=3e-4, **kwargs) -> LightningModule:
+    cfg = open_yaml(trav_cfg_path)
     train_cfg = open_yaml(train_cfg_path)
 
     nav_checkpoint_path = cfg['navigation']['checkpoint_path']
@@ -134,7 +134,7 @@ def bc_no_trav_factory(cfg_path,train_cfg_path, class_weights=None, ckpt=None, d
 
     if class_weights is not None:
         class_weights = class_weights.to(device)
-    model = BC(nav_enc, action_dim=action_dim, input_dim=(18,224,224), feature_dim=(49,1280),class_weights=class_weights, lr= lr) # TODO: wrong feature dim
+    model = BC(nav_enc, action_dim=action_dim, stack_method='channel', feature_dim=(49,1280),class_weights=class_weights, lr= lr) # TODO: wrong feature dim
     if ckpt is not None:
         sd = torch.load(ckpt)['state_dict']
         model.load_state_dict(sd, strict=False)
@@ -143,7 +143,7 @@ def bc_no_trav_factory(cfg_path,train_cfg_path, class_weights=None, ckpt=None, d
 
 
 
-def bc_only_trav_factory(trav_cfg_path,train_cfg_path, ckpt=None, device='cuda'):
+def bc_only_trav_factory(trav_cfg_path,train_cfg_path, ckpt=None, device='cuda', lr=3e-4, **kwargs) -> LightningModule:
     cfg = open_yaml(trav_cfg_path)
     train_cfg = open_yaml(train_cfg_path)
 
@@ -153,14 +153,39 @@ def bc_only_trav_factory(trav_cfg_path,train_cfg_path, ckpt=None, device='cuda')
     vpt_prompt_length = cfg['traversability']['vpt_prompt_length']
     trav_img_dim = tuple(cfg['traversability']['img_dim'])
     device = cfg['device']
+    p_drop = cfg['training']['dropout']
 
     trav_model = trav_prior_factory(trav_checkpoint_path, img_dim=trav_img_dim, vpt=vpt, vpt_prompt_length=vpt_prompt_length, device=device)
+    
+    trav_model.forward = trav_model.forward_single_layer
+    #trav_single_output = lambda x: trav_model(x).permute(1,0,2,3)[0] # only return the probabilities for class 1 (since they will sum to 1 along axis 1)
+
+    backbone = PriorSelfAttn(trav_model, inp_dim=trav_img_dim, p_drop=p_drop)
 
     action_dim = train_cfg['dimensions']['action_dim']
     lr = float(train_cfg['training']['lr'])
 
-    model = BC(trav_model, action_dim=action_dim, feature_dim=(49,1280), lr= lr) # TODO: wrong feature dim
+
+    model = BC(backbone, action_dim=action_dim, feature_dim=(64, 256), lr= lr) # TODO: wrong feature dim
+    
+    # # sanity check
+    # x = torch.rand((2, 6, 3, 224,224))
+    # y= model(x)
+
     if ckpt is not None:
         sd = torch.load(ckpt)['state_dict']
         model.load_state_dict(sd, strict=False)
     return model.to(device)
+
+def get_factory_from_type(model_type):
+    if model_type == 'trav':
+        factory = bc_only_trav_factory
+    elif model_type == 'image':
+        factory= bc_no_trav_factory
+    elif model_type == 'fusion':
+        factory = bc_fusion_factory
+    elif model_type == 'heuristic':
+        factory = None
+    else:
+        raise Exception(f'Invalid model type: {model_type}')
+    return factory
